@@ -1,1 +1,21 @@
+# binary
 semexample
+
+# compiled includes
+*.d
+
+# objects
+*.o
+*.ko
+*.obj
+*.elf
+*.elf.size
+
+# compiler output
+*.map
+
+# editor leftovers
+*.swp
+*.swo
+*~
+

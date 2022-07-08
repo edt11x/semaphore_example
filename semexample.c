@@ -13,6 +13,23 @@
 #include <sys/stat.h> // mode constants
 #include <fcntl.h>    // file handling constants
 
+#define MAX_EVENT_ARRAY (1024U)
+
+enum thread_states { UNINITIALIZED, IN_THREAD, OPENING_SEM, WAITING_ON_SEM, HAS_SEM,
+                     RELEASE_SEM };
+
+struct event_list
+{
+    const char * name;
+    enum thread_states new_state;
+} list_of_events[MAX_EVENT_ARRAY];
+unsigned int this_event_idx = 0U;
+
+sem_t * sem = NULL;
+
+const char * main_name = "Main";
+const char * second_name = "Second";
+
 // this is the important part, creating a named shared memory semaphore that
 // can be shared between processes
 //
@@ -54,72 +71,97 @@ sem_t * my_fake_sem_open(void)
     return semaphore;
 }
 
+extern void put_event(const char * name, enum thread_states this_state);
+void put_event(const char * name, enum thread_states this_state)
+{
+    unsigned int our_event_idx = this_event_idx; // this is still a race condition, but hey...
+    unsigned int new_event_idx = (++this_event_idx) & (MAX_EVENT_ARRAY - 1U);
+    list_of_events[our_event_idx].name = name;
+    list_of_events[our_event_idx].new_state = this_state;
+    this_event_idx = new_event_idx;
+}
+
 extern void * p_main(void * p);
 void * p_main(void * p)
 {
-    sem_t * sem = NULL;
+    put_event(main_name, IN_THREAD);
     if (p)
     {
         printf("Unexpected parameter in p_main()\n");
         return(NULL);
     }
-    printf("In p_main()\n"); // never use printf in a thread...
-    fflush(stdout);
-    // suspend ourselves for coordinated initialization.
-    printf("We are running, pthread_main()\n");
-    fflush(stdout);
-    printf("opening the named file system semaphore\n");
-    sem = my_fake_sem_open();
     for (;;)
     {
-        printf("p_main waiting\n");
-        fflush(stdout);
+        put_event(main_name, WAITING_ON_SEM);
         sem_wait(sem);
-        printf("p_main has the semaphore\n");
-        fflush(stdout);
-        sleep(2); // just sleeping to see things happening a bit better
-        printf("p_main leaving critical section\n");
-        fflush(stdout);
+        put_event(main_name, HAS_SEM);
+        usleep((unsigned int)rand() & 4194303U);
+        put_event(main_name, RELEASE_SEM);
         sem_post(sem);
-        sleep(1);
+        usleep((unsigned int)rand() & 4194303U);
     }
     return(NULL);
 }
-
 extern void * p_second(void * p);
 void * p_second(void * p)
 {
-    sem_t * sem = NULL;
+    put_event(second_name, IN_THREAD);
     if (p)
     {
         printf("Unexpected parameter in p_second()\n");
         return(NULL);
     }
-    printf("In p_second()\n"); // never use printf in a thread...
-    fflush(stdout);
-    // suspend ourselves for coordinated initialization.
-    printf("We are running, pthread_block()\n");
-    printf("opening the named file system semaphore\n");
-    sem = my_fake_sem_open();
     for (;;)
     {
-        printf("p_second waiting\n");
-        fflush(stdout);
+        put_event(second_name, WAITING_ON_SEM);
         sem_wait(sem);
-        printf("p_second has the semaphore\n");
-        fflush(stdout);
-        sleep(2);
-        printf("p_second leaving critical section\n");
-        fflush(stdout);
+        put_event(second_name, HAS_SEM);
+        usleep((unsigned int)rand() & 4194303U);
+        put_event(second_name, RELEASE_SEM);
         sem_post(sem);
-        sleep(1);
+        usleep((unsigned int)rand() & 4194303U);
     }
     return(NULL);
+}
+
+extern void report_state(const char * thread_name, enum thread_states this_state);
+void report_state(const char * thread_name, enum thread_states this_state)
+{
+    if (thread_name)
+    {
+        switch(this_state)
+        {
+            case UNINITIALIZED:
+                printf("%s thread is uninitialized\n", thread_name);
+                break;
+            case IN_THREAD:
+                printf("In the %s thread\n", thread_name);
+                break;
+            case OPENING_SEM:
+                printf("%s thread is opening the semaphore\n", thread_name);
+                break;
+            case WAITING_ON_SEM:
+                printf("%s thread is waiting on the semaphore\n", thread_name);
+                break;
+            case HAS_SEM:
+                printf("%s has aquired the semaphore, it is in the critical region\n",
+                        thread_name);
+                break;
+            case RELEASE_SEM:
+                printf("%s is releasing the semaphore, it has left the critical region\n",
+                        thread_name);
+                break;
+            default:
+                printf("%s is in an unknown state\n", thread_name);
+                break;
+        }
+    }
 }
 
 int main(int argc, char ** argv)
 {
     pthread_t pthread_main, pthread_second;
+    unsigned int i = 0U;
 
     if (argc > 1)
     {
@@ -131,6 +173,15 @@ int main(int argc, char ** argv)
         printf("Pointer to argv is NULL\n");
         exit(1);
     }
+    for (i = 0U; i < MAX_EVENT_ARRAY; i++)
+    {
+        list_of_events[i].name = "UNINITIALIZED";
+        list_of_events[i].new_state = UNINITIALIZED;
+    }
+    put_event(main_name, OPENING_SEM);
+    sem = my_fake_sem_open();
+
+    this_event_idx = 0U;
     printf("Hello World\n");
     if (pthread_create(&pthread_main, NULL, p_main, NULL))
     {
@@ -144,7 +195,15 @@ int main(int argc, char ** argv)
         perror("pthread_create() failed for main");
         exit(1);
     }
-    sleep(10); // just run the whole thing for 10 seconds:w
 
+    i = 0U;
+    for (;;)
+    {
+        if (i != this_event_idx)
+        {
+            report_state(list_of_events[i].name, list_of_events[i].new_state);
+            i = (i + 1) & (MAX_EVENT_ARRAY - 1U);
+        }
+    }
     exit(0);
 }
