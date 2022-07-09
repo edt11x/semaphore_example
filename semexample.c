@@ -17,8 +17,11 @@
 #define MAX_EVENT_ARRAY (10240U)
 #define MAX_SLEEP_TIME  ((1U << 19)-1U)
 
+// we need to report the state of threads in a thread safe way, no printf()s in threads
 enum thread_states { UNINITIALIZED, IN_THREAD, OPENING_SEM, WAITING_ON_SEM, HAS_SEM,
                      RELEASE_SEM };
+
+// we need a place to put the reported events from the threads
 struct event_list
 {
     const char * name;
@@ -75,7 +78,7 @@ sem_t * my_fake_sem_open(void)
 extern void put_event(const char * name, enum thread_states this_state);
 void put_event(const char * name, enum thread_states this_state)
 {
-    // We use this routine, put_event, to record the event that has happened
+    // We use this routine, put_event(), to record the event that has happened
     // so we are not manipulating charater strings or using printf() in a 
     // thread. This should be relatively fast and should mostly work.
     //
@@ -90,6 +93,9 @@ void put_event(const char * name, enum thread_states this_state)
     unsigned int new_event_idx = (++this_event_idx) & (MAX_EVENT_ARRAY - 1U);
     list_of_events[our_event_idx].name = name;
     list_of_events[our_event_idx].new_state = this_state;
+    // we have to update the event index last, since we do not want the main()
+    // routine to print out uninitialized or stale data. We need the event added
+    // into the list of events slot before we update the event index.
     this_event_idx = new_event_idx;
 }
 
@@ -105,8 +111,13 @@ void * p_main(void * p) // Main thread
     for (;;)
     {
         put_event(main_name, WAITING_ON_SEM);
+        // Here to wait for a semaphore, we could
+        // * Block and wait with sem_wait()
+        // * Check to see if we need to wait, sem_trywait()
+        // * Have a timed wait, with sem_timedwait()
         sem_wait(sem);
         put_event(main_name, HAS_SEM);
+        // we want to the two threads to change their temperal relationship, so random sleep
         usleep((unsigned int)rand() & MAX_SLEEP_TIME); // sleep a substitute for crit region work
         put_event(main_name, RELEASE_SEM);
         sem_post(sem);
@@ -204,13 +215,13 @@ int main(int argc, char ** argv)
         die("pthread_create() failed for main");
     }
 
-    for (i = 0U;;) // this main loop spins hard, and we could potentially get so
-    {        // far behind that we actually lose the whole arrays worth of events
+    for (i = 0U;;)  // this main loop spins hard, and we could potentially get so
+    {               // far behind that we actually lose the whole arrays worth of events
         if (i != this_event_idx)
         {
             report_state(list_of_events[i].name, list_of_events[i].new_state);
-            i = (i + 1) & (MAX_EVENT_ARRAY - 1U);
+            i = (i + 1) & (MAX_EVENT_ARRAY - 1U); // move to the next entry in the list of events
         }
     }
-    exit(0);
+    exit(0); // just let the process exit to clean up everything, this is just an example
 }
